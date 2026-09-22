@@ -1,268 +1,89 @@
-import { chromium } from "playwright";
-import fs from "node:fs";
-
-const START_URL =
-  "https://service.berlin.de/dienstleistung/351180/standort/351435/";
-
-const browser = await chromium.launch({
-  headless: true
-});
-
-async function runCheck(attempt) {
-  // Jeder neue Versuch beginnt sauber.
-  // Innerhalb eines Versuchs bleibt aber dieselbe Browser-Session bestehen.
-  const context = await browser.newContext({
-    locale: "de-DE",
-    timezoneId: "Europe/Berlin"
-  });
-
-  const page = await context.newPage();
-
-  try {
-    console.log(`===== Versuch ${attempt}/3 =====`);
-
-    // --------------------------------------------------
-    // SCHRITT 1: Standortseite öffnen
-    // --------------------------------------------------
-    console.log("1. Öffne Standortseite ...");
-
-    const response = await page.goto(START_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: 60000
-    });
-
-    console.log("HTTP-Status:", response?.status());
-    console.log("URL:", page.url());
-
-    if (response && response.status() >= 400) {
-      throw new Error(
-        `Standortseite lieferte HTTP ${response.status()}`
-      );
-    }
-
-    await page.waitForTimeout(2000);
-
-    // --------------------------------------------------
-    // SCHRITT 2:
-    // "An diesem Standort einen Termin buchen" KLICKEN
-    // --------------------------------------------------
-    console.log(
-      "2. Suche 'An diesem Standort einen Termin buchen' ..."
-    );
-
-    // Zuerst über das konkrete href identifizieren.
-    // WICHTIG: Wir navigieren NICHT direkt dorthin.
-    // Der Link auf der Standortseite wird tatsächlich geklickt.
-    let bookingLink = page.locator(
-      'a[href="/terminvereinbarung/termin/provider/351435/351180/"]'
-    ).first();
-
-    if (await bookingLink.count() === 0) {
-      // Fallback über den sichtbaren Linktext
-      bookingLink = page.getByRole("link", {
-        name: /An diesem Standort einen Termin buchen/i
-      }).first();
-    }
-
-    await bookingLink.waitFor({
-      state: "visible",
-      timeout: 20000
-    });
-
-    console.log(
-      "Link gefunden:",
-      await bookingLink.getAttribute("href")
-    );
-
-    await bookingLink.scrollIntoViewIfNeeded();
-
-    console.log("Klicke ersten Link ...");
-
-    await Promise.all([
-      page.waitForURL(
-        /\/terminvereinbarung\/termin\//,
-        { timeout: 30000 }
-      ),
-      bookingLink.click()
-    ]);
-
-    console.log("Nach Klick 1:", page.url());
-
-    // Wir erwarten jetzt die Terminvereinbarung.
-    // Es wurde NICHT direkt dorthin gesprungen.
-    if (
-      !page.url().includes(
-        "/terminvereinbarung/termin/"
-      )
-    ) {
-      throw new Error(
-        "Der erste Klick führte nicht zur Terminvereinbarung."
-      );
-    }
-
-    await page.waitForLoadState("domcontentloaded");
-    await page.waitForTimeout(1500);
-
-    // --------------------------------------------------
-    // SCHRITT 3:
-    // "Buchbare Tage anzeigen" KLICKEN
-    // --------------------------------------------------
-    console.log("3. Suche 'Buchbare Tage anzeigen' ...");
-
-    let daysButton = page.getByRole("button", {
-      name: /Buchbare Tage anzeigen/i
-    }).first();
-
-    if (await daysButton.count() === 0) {
-      daysButton = page.locator(
-        'input[type="submit"][value*="Buchbare Tage anzeigen"]'
-      ).first();
-    }
-
-    await daysButton.waitFor({
-      state: "visible",
-      timeout: 20000
-    });
-
-    console.log("Klicke 'Buchbare Tage anzeigen' ...");
-
-    await daysButton.scrollIntoViewIfNeeded();
-
-    await Promise.all([
-      page.waitForURL(
-        /\/terminvereinbarung\/termin\/(day|taken)\//,
-        { timeout: 30000 }
-      ),
-      daysButton.click()
-    ]);
-
-    await page.waitForLoadState("domcontentloaded");
-    await page.waitForTimeout(1000);
-
-    // --------------------------------------------------
-    // SCHRITT 4: Ergebnis auswerten
-    // --------------------------------------------------
-    const finalUrl = page.url();
-    const bodyText = await page.locator("body").innerText();
-
-    console.log("4. Ergebnis-URL:", finalUrl);
-
-    let status;
-
-    if (finalUrl.includes("/termin/day/")) {
-
-      status = "AVAILABLE";
-
-    } else if (
-      finalUrl.includes("/termin/taken/") ||
-      /Leider sind aktuell keine Termine für ihre Auswahl verfügbar/i.test(
-        bodyText
-      )
-    ) {
-
-      status = "NONE";
-
-    } else {
-
-      throw new Error(
-        `Unbekanntes Ergebnis: ${finalUrl}`
-      );
-    }
-
-    console.log("STATUS:", status);
-
-    return {
-      status,
-      finalUrl
-    };
-
-  } catch (error) {
-    console.error(`Versuch ${attempt} fehlgeschlagen.`);
-    console.error("Aktuelle URL:", page.url());
-
-    // Ein bisschen Diagnose ausgeben,
-    // falls Berlin.de kurzfristig eine andere Seite liefert.
-    try {
-      console.error("Seitentitel:", await page.title());
-
-      const text = await page
-        .locator("body")
-        .innerText({ timeout: 3000 });
-
-      console.error(
-        "Seitenanfang:",
-        text.slice(0, 1000)
-      );
-    } catch {
-      // Diagnose konnte nicht gelesen werden
-    }
-
-    throw error;
-
-  } finally {
-    await context.close();
-  }
-}
-
-
-let result;
-let lastError;
-
-try {
-
-  // Bei temporären Berlin.de-Problemen den kompletten
-  // echten Ablauf bis zu 3-mal neu durchführen.
-  for (let attempt = 1; attempt <= 3; attempt++) {
-
-    try {
-
-      result = await runCheck(attempt);
-      break;
-
-    } catch (error) {
-
-      lastError = error;
-
-      console.error(error);
-
-      if (attempt < 3) {
-        console.log(
-          "Warte 5 Sekunden und starte den kompletten Ablauf erneut ..."
-        );
-
-        await new Promise(resolve =>
-          setTimeout(resolve, 5000)
-        );
-      }
-    }
-  }
-
-  if (!result) {
-    throw lastError;
-  }
-
-  // Ergebnis an GitHub Actions übergeben
-  if (process.env.GITHUB_OUTPUT) {
-    fs.appendFileSync(
-      process.env.GITHUB_OUTPUT,
-      `status=${result.status}\nfinal_url=${result.finalUrl}\n`
-    );
-  }
-
-  console.log("");
-  console.log("===== ERFOLGREICH =====");
-  console.log("STATUS:", result.status);
-  console.log("URL:", result.finalUrl);
-
-} catch (error) {
-
-  console.error("");
-  console.error("===== ALLE 3 VERSUCHE FEHLGESCHLAGEN =====");
-  console.error(error);
-
-  process.exitCode = 1;
-
-} finally {
-
-  await browser.close();
-}
+name: Einbürgerungstest Terminchecker
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_alarm:
+        description: "Test-Alarm senden"
+        required: false
+        default: false
+        type: boolean
+
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository laden
+        uses: actions/checkout@v4
+
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Playwright installieren
+        run: |
+          npm install playwright
+          npx playwright install --with-deps chromium
+
+      - name: Einbürgerungstest-Termine prüfen
+        id: termin
+        env:
+          TEST_ALARM: ${{ inputs.test_alarm }}
+        run: |
+          if [ "$TEST_ALARM" = "true" ]; then
+            echo "Manueller Test-Alarm."
+            echo "status=AVAILABLE" >> "$GITHUB_OUTPUT"
+            echo "final_url=TEST-ALARM" >> "$GITHUB_OUTPUT"
+          else
+            node check.mjs
+          fi
+
+      - name: Benachrichtigung senden
+        if: steps.termin.outputs.status == 'AVAILABLE'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_ALARM: ${{ inputs.test_alarm }}
+        run: |
+          issue=$(gh issue list \
+            --state open \
+            --search '"Einbürgerungstest: Termin-Alarm" in:title' \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ "$TEST_ALARM" = "true" ]; then
+            message="🧪 TEST-ALARM
+
+          Das ist nur ein Test der Benachrichtigung.
+
+          Wenn du hierfür eine E-Mail bekommst, funktioniert die Alarmierung."
+          else
+            message="🚨 TERMIN VERFÜGBAR
+
+          Der automatische Checker hat gerade buchbare Termine gefunden.
+
+          Ergebnis:
+          ${{ steps.termin.outputs.final_url }}
+
+          Jetzt sofort prüfen:
+          https://service.berlin.de/dienstleistung/351180/standort/351435/
+
+          Der Checker läuft weiter und prüft wieder in etwa 10 Minuten."
+          fi
+
+          if [ -z "$issue" ]; then
+            gh issue create \
+              --title "🚨 Einbürgerungstest: Termin-Alarm" \
+              --body "$message"
+          else
+            gh issue comment "$issue" \
+              --body "$message"
+          fi
