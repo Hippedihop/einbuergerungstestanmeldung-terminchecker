@@ -1,0 +1,71 @@
+name: Einbürgerungstest Terminchecker
+
+on:
+  # Ermöglicht uns zuerst einen manuellen Test
+  workflow_dispatch:
+
+  # Danach automatisch alle 10 Minuten
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository laden
+        uses: actions/checkout@v4
+
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Playwright installieren
+        run: |
+          npm install playwright
+          npx playwright install --with-deps chromium
+
+      - name: Einbürgerungstest-Termine prüfen
+        id: termin
+        run: node check.mjs
+
+      - name: Alarm bei verfügbarem Termin
+        if: steps.termin.outputs.status == 'AVAILABLE'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh issue list \
+            --state open \
+            --search '"TERMIN VERFÜGBAR" in:title' \
+            --json number \
+            --jq '.[0].number')
+
+          if [ -z "$existing" ]; then
+            gh issue create \
+              --title "🚨 TERMIN VERFÜGBAR – Einbürgerungstest" \
+              --body "Es wurden buchbare Termine beim ServicePortal Berlin gefunden.
+
+          Ergebnis:
+          ${{ steps.termin.outputs.final_url }}
+
+          Jetzt sofort prüfen:
+          https://service.berlin.de/dienstleistung/351180/standort/351435/"
+          fi
+
+      - name: Alarm zurücksetzen
+        if: steps.termin.outputs.status == 'NONE'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for issue in $(gh issue list \
+            --state open \
+            --search '"TERMIN VERFÜGBAR" in:title' \
+            --json number \
+            --jq '.[].number'); do
+            gh issue close "$issue"
+          done
