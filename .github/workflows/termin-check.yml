@@ -18,7 +18,22 @@ permissions:
 
 jobs:
   check:
+    name: Check - ${{ matrix.location_name }}
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - location_id: "351435"
+            location_name: "Tempelhof-Schöneberg"
+            location_url: "https://service.berlin.de/dienstleistung/351180/standort/351435/"
+            test_alarm_primary: "true"
+
+          - location_id: "325987"
+            location_name: "Steglitz-Zehlendorf"
+            location_url: "https://service.berlin.de/dienstleistung/351180/standort/325987/"
+            test_alarm_primary: "false"
 
     steps:
       - name: Repository laden
@@ -38,13 +53,23 @@ jobs:
         id: termin
         env:
           TEST_ALARM: ${{ inputs.test_alarm }}
+          LOCATION_ID: ${{ matrix.location_id }}
+          TEST_ALARM_PRIMARY: ${{ matrix.test_alarm_primary }}
         run: |
           if [ "$TEST_ALARM" = "true" ]; then
-            echo "Manueller Test-Alarm."
-            echo "status=AVAILABLE" >> "$GITHUB_OUTPUT"
-            echo "final_url=TEST-ALARM" >> "$GITHUB_OUTPUT"
+
+            if [ "$TEST_ALARM_PRIMARY" = "true" ]; then
+              echo "Manueller Test-Alarm."
+              echo "status=AVAILABLE" >> "$GITHUB_OUTPUT"
+              echo "final_url=TEST-ALARM" >> "$GITHUB_OUTPUT"
+            else
+              echo "Test-Alarm wird für diesen zweiten Standort übersprungen."
+              echo "status=NONE" >> "$GITHUB_OUTPUT"
+              echo "final_url=TEST-ALARM-SKIPPED" >> "$GITHUB_OUTPUT"
+            fi
+
           else
-            node check.mjs
+            node check.mjs "$LOCATION_ID"
           fi
 
       - name: Benachrichtigung senden
@@ -52,36 +77,50 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TEST_ALARM: ${{ inputs.test_alarm }}
+          LOCATION_NAME: ${{ matrix.location_name }}
+          LOCATION_URL: ${{ matrix.location_url }}
+          FINAL_URL: ${{ steps.termin.outputs.final_url }}
         run: |
-          issue=$(gh issue list \
-            --state open \
-            --search '"Einbürgerungstest: Termin-Alarm" in:title' \
-            --json number \
-            --jq '.[0].number // empty')
-
           if [ "$TEST_ALARM" = "true" ]; then
+
+            ISSUE_TITLE="🧪 Einbürgerungstest: Test-Alarm"
+
             message="🧪 TEST-ALARM
 
           Das ist nur ein Test der Benachrichtigung.
 
           Wenn du hierfür eine E-Mail bekommst, funktioniert die Alarmierung."
+
           else
+
+            ISSUE_TITLE="🚨 Einbürgerungstest: Termin-Alarm - $LOCATION_NAME"
+
             message="🚨 TERMIN VERFÜGBAR
+
+          Standort:
+          $LOCATION_NAME
 
           Der automatische Checker hat gerade buchbare Termine gefunden.
 
           Ergebnis:
-          ${{ steps.termin.outputs.final_url }}
+          $FINAL_URL
 
           Jetzt sofort prüfen:
-          https://service.berlin.de/dienstleistung/351180/standort/351435/
+          $LOCATION_URL
 
           Der Checker läuft weiter und prüft wieder in etwa 10 Minuten."
+
           fi
+
+          issue=$(gh issue list \
+            --state open \
+            --search "\"$ISSUE_TITLE\" in:title" \
+            --json number \
+            --jq '.[0].number // empty')
 
           if [ -z "$issue" ]; then
             gh issue create \
-              --title "🚨 Einbürgerungstest: Termin-Alarm" \
+              --title "$ISSUE_TITLE" \
               --body "$message"
           else
             gh issue comment "$issue" \
