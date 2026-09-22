@@ -4,12 +4,7 @@ import fs from "node:fs";
 const START_URL =
   "https://service.berlin.de/dienstleistung/351180/standort/351435/";
 
-const ENTRY_URL =
-  "https://service.berlin.de/terminvereinbarung/termin/tag.php?termin=1&anliegen%5B%5D=351180&dienstleister%5B%5D=351435";
-
-const browser = await chromium.launch({
-  headless: true
-});
+const browser = await chromium.launch({ headless: true });
 
 const context = await browser.newContext({
   locale: "de-DE",
@@ -17,6 +12,18 @@ const context = await browser.newContext({
 });
 
 const page = await context.newPage();
+
+function setOutput(status, finalUrl) {
+  console.log("STATUS:", status);
+  console.log("URL:", finalUrl);
+
+  if (process.env.GITHUB_OUTPUT) {
+    fs.appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      `status=${status}\nfinal_url=${finalUrl}\n`
+    );
+  }
+}
 
 try {
   console.log("1. Standortseite öffnen");
@@ -28,8 +35,10 @@ try {
 
   console.log("Startseite:", page.url());
 
-  // Kontrollieren, dass der gewünschte Standort dort
-  // tatsächlich als buchbar angeboten wird.
+  // -------------------------------------------------
+  // 2. ECHTER KLICK auf den Buchungslink
+  // -------------------------------------------------
+
   const bookingLink = page
     .locator(
       'a[href*="/terminvereinbarung/termin/provider/351435/351180/"]'
@@ -42,104 +51,105 @@ try {
   });
 
   console.log(
-    "Standort-Link gefunden:",
+    "Buchungslink gefunden:",
     await bookingLink.getAttribute("href")
   );
 
-  // Dienstleistung 351180 + Standort 351435 werden hier
-  // ausdrücklich an das Berliner Termin-System übergeben.
-  console.log("2. Standort und Dienstleistung an Termin-System übergeben");
+  console.log("2. Klicke Buchungslink");
 
-  await page.goto(ENTRY_URL, {
-    waitUntil: "domcontentloaded",
-    timeout: 30000
-  });
+  await bookingLink.click();
 
-  console.log("Nach Auswahl:", page.url());
+  await page.waitForLoadState("domcontentloaded");
+  await page.waitForTimeout(1500);
+
+  console.log("Nach Klick 1:", page.url());
+
+  // -------------------------------------------------
+  // Wartung erkennen
+  // -------------------------------------------------
+
+  const bodyText = await page.locator("body").innerText();
 
   if (
-    !page.url().includes(
-      "/terminvereinbarung/termin/time/restriction/"
-    )
+    /Terminverwaltung wird momentan gewartet/i.test(bodyText) ||
+    /Bitte probieren Sie es zu einem späteren Zeitpunkt erneut/i.test(bodyText)
   ) {
-    throw new Error(
-      `Erwartete Restriction-Seite nicht erreicht: ${page.url()}`
-    );
-  }
+    console.log("Berlin.de Terminverwaltung befindet sich in Wartung.");
 
-  console.log("3. Zeit-Auswahl prüfen");
+    setOutput("MAINTENANCE", page.url());
+    process.exitCode = 0;
 
-  const checkboxes = page.locator('input[name="zeit[]"]');
-  const count = await checkboxes.count();
+  } else {
 
-  console.log("Gefundene Zeitoptionen:", count);
+    // -------------------------------------------------
+    // Es muss jetzt die Zeit-/Tage-Auswahl kommen
+    // -------------------------------------------------
 
-  if (count < 8) {
-    throw new Error(
-      `Zu wenige Zeitoptionen gefunden: ${count}`
-    );
-  }
-
-  // Montag-Samstag sowie vormittags/nachmittags auswählen.
-  for (let i = 0; i < count; i++) {
-    const checkbox = checkboxes.nth(i);
-
-    if (!(await checkbox.isChecked())) {
-      await checkbox.check();
+    if (
+      !page.url().includes(
+        "/terminvereinbarung/termin/time/restriction/"
+      )
+    ) {
+      throw new Error(
+        `Unerwartete Seite nach Klick 1: ${page.url()}`
+      );
     }
-  }
 
-  const form = page
-    .locator('form:has(input[name="zeit[]"])')
-    .first();
+    console.log("3. Restriction-Seite erreicht");
 
-  const submitButton = form
-    .locator('button[type="submit"], input[type="submit"]')
-    .first();
+    // -------------------------------------------------
+    // 4. ECHTER KLICK auf "Buchbare Tage anzeigen"
+    // -------------------------------------------------
 
-  await submitButton.waitFor({
-    state: "visible",
-    timeout: 15000
-  });
+    let daysButton = page
+      .getByRole("button", {
+        name: /Buchbare Tage anzeigen/i
+      })
+      .first();
 
-  console.log("4. Klicke 'Buchbare Tage anzeigen'");
+    if ((await daysButton.count()) === 0) {
+      daysButton = page
+        .locator(
+          'input[type="submit"][value*="Buchbare Tage anzeigen"]'
+        )
+        .first();
+    }
 
-  await Promise.all([
-    page.waitForURL(
+    await daysButton.waitFor({
+      state: "visible",
+      timeout: 15000
+    });
+
+    console.log("4. Klicke 'Buchbare Tage anzeigen'");
+
+    await daysButton.click();
+
+    await page.waitForURL(
       /\/terminvereinbarung\/termin\/(day|taken)\//,
       { timeout: 30000 }
-    ),
-    submitButton.click()
-  ]);
-
-  const finalUrl = page.url();
-
-  console.log("Ergebnis-URL:", finalUrl);
-
-  let status;
-
-  if (finalUrl.includes("/termin/day/")) {
-    status = "AVAILABLE";
-  } else if (finalUrl.includes("/termin/taken/")) {
-    status = "NONE";
-  } else {
-    throw new Error(
-      `Unbekannte Ergebnis-Seite: ${finalUrl}`
     );
-  }
 
-  console.log("STATUS:", status);
+    const finalUrl = page.url();
 
-  if (process.env.GITHUB_OUTPUT) {
-    fs.appendFileSync(
-      process.env.GITHUB_OUTPUT,
-      `status=${status}\nfinal_url=${finalUrl}\n`
-    );
+    console.log("Ergebnis:", finalUrl);
+
+    if (finalUrl.includes("/termin/day/")) {
+      setOutput("AVAILABLE", finalUrl);
+
+    } else if (finalUrl.includes("/termin/taken/")) {
+      setOutput("NONE", finalUrl);
+
+    } else {
+      throw new Error(
+        `Unbekannte Ergebnis-Seite: ${finalUrl}`
+      );
+    }
   }
 
 } catch (error) {
   console.error("CHECK FEHLGESCHLAGEN");
   console.error(error);
+
   process.exitCode = 1;
 
 } finally {
