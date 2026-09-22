@@ -1,8 +1,14 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
 
+const SERVICE_ID = "351180";
+const LOCATION_ID = process.argv[2] || "351435";
+
 const START_URL =
-  "https://service.berlin.de/dienstleistung/351180/standort/351435/";
+  `https://service.berlin.de/dienstleistung/${SERVICE_ID}/standort/${LOCATION_ID}/`;
+
+const PROVIDER_PATH =
+  `/terminvereinbarung/termin/provider/${LOCATION_ID}/${SERVICE_ID}/`;
 
 const browser = await chromium.launch({ headless: true });
 
@@ -40,9 +46,7 @@ try {
   // -------------------------------------------------
 
   const bookingLink = page
-    .locator(
-      'a[href*="/terminvereinbarung/termin/provider/351435/351180/"]'
-    )
+    .locator(`a[href*="${PROVIDER_PATH}"]`)
     .first();
 
   await bookingLink.waitFor({
