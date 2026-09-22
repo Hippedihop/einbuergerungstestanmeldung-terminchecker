@@ -1,10 +1,14 @@
 name: Einbürgerungstest Terminchecker
 
 on:
-  # Manuell über "Run workflow" startbar
   workflow_dispatch:
+    inputs:
+      test_alarm:
+        description: "Test-Alarm senden"
+        required: false
+        default: false
+        type: boolean
 
-  # Automatisch alle 10 Minuten
   schedule:
     - cron: "*/10 * * * *"
 
@@ -34,11 +38,8 @@ jobs:
         id: termin
         run: node check.mjs
 
-      # -------------------------------------------------------
-      # TERMIN VORHANDEN
-      # -------------------------------------------------------
       - name: Alarm bei verfügbarem Termin
-        if: steps.termin.outputs.status == 'AVAILABLE'
+        if: steps.termin.outputs.status == 'AVAILABLE' || github.event.inputs.test_alarm == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -49,8 +50,6 @@ jobs:
             --jq '.[0].number')
 
           if [ -z "$issue" ]; then
-
-            echo "Termin gefunden - neues Alarm-Issue wird erstellt."
 
             gh issue create \
               --title "🚨 TERMIN VERFÜGBAR – Einbürgerungstest" \
@@ -68,8 +67,6 @@ jobs:
 
           else
 
-            echo "Termin weiterhin vorhanden - erneute Benachrichtigung."
-
             gh issue comment "$issue" \
               --body "🚨 **TERMIN WEITERHIN VERFÜGBAR**
 
@@ -85,11 +82,8 @@ jobs:
 
           fi
 
-      # -------------------------------------------------------
-      # KEINE TERMINE VORHANDEN
-      # -------------------------------------------------------
       - name: Alarm zurücksetzen
-        if: steps.termin.outputs.status == 'NONE'
+        if: steps.termin.outputs.status == 'NONE' && github.event.inputs.test_alarm != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -100,6 +94,5 @@ jobs:
             --jq '.[].number')
 
           for issue in $issues; do
-            echo "Keine Termine mehr vorhanden - Alarm #$issue wird zurückgesetzt."
             gh issue close "$issue"
           done
