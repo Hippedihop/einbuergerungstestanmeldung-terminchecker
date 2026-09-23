@@ -122,10 +122,27 @@ try {
 
     await daysButton.click();
 
-    await page.waitForURL(
-      /\/terminvereinbarung\/termin\/(day|taken)\//,
-      { timeout: 30000 }
-    );
+    try {
+      await page.waitForURL(
+        /\/terminvereinbarung\/termin\/(day|taken)\//,
+        {
+          waitUntil: "commit",
+          timeout: 30000
+        }
+      );
+    } catch {
+      console.log("ERWARTETE ZIELSEITE NICHT ERREICHT");
+      console.log("URL nach Klick 2:", page.url());
+
+      const textAfterClick = await page.locator("body").innerText();
+
+      console.log("Seitentext nach Klick 2:");
+      console.log(textAfterClick.slice(0, 4000));
+
+      throw new Error(
+        `Unerwartete Seite nach Klick 2: ${page.url()}`
+      );
+    }
 
     const finalUrl = page.url();
 
