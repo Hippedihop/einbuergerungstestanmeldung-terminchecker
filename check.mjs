@@ -105,23 +105,17 @@ try {
     // 4. ECHTER KLICK auf "Buchbare Tage anzeigen"
     // -------------------------------------------------
 
-    let daysButton = page
-      .getByRole("button", {
-        name: /Buchbare Tage anzeigen/i
-      })
+    const daysButton = page
+      .locator(
+        'button:has-text("Buchbare Tage anzeigen"), input[type="submit"][value*="Buchbare Tage anzeigen"]'
+      )
       .first();
 
-    if ((await daysButton.count()) === 0) {
-      daysButton = page
-        .locator(
-          'input[type="submit"][value*="Buchbare Tage anzeigen"]'
-        )
-        .first();
-    }
+    console.log("Warte auf 'Buchbare Tage anzeigen'");
 
     await daysButton.waitFor({
       state: "visible",
-      timeout: 15000
+      timeout: 30000
     });
 
     console.log("4. Klicke 'Buchbare Tage anzeigen'");
